@@ -4,161 +4,244 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+/**
+ * Unit-level coverage for the thin MCP shell itself: request shaping,
+ * response formatting, and the "service unavailable" branches. A tiny fake
+ * TCP server stands in for the main-process job service so the real framing
+ * code in `sendTcpRequest` runs, without depending on `mediaJob`'s real job
+ * engine (that round trip is `mediaMcpServer.integration.test.ts`'s job).
+ *
+ * `MEDIA_MCP_PORT` is read once at module load time, so each scenario that
+ * needs a different port (or no port at all) resets the module registry and
+ * re-imports.
+ */
+
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { IMAGE_GEN_ENV_KEYS } from '@/common/config/imageGenerationMcpEnv';
+import net from 'node:net';
 
-const executeMediaGenerationMock = vi.hoisted(() => vi.fn());
+type Frame = Record<string, unknown>;
 
-vi.mock('@/common/media', () => ({
-  executeMediaGeneration: executeMediaGenerationMock,
-}));
-
-import {
-  getProviderFromEnv,
-  handleImageGeneration,
-  normalizeImageUris,
-} from '@process/resources/builtinMcp/imageGenServer';
-
-const ENV_KEYS = Object.values(IMAGE_GEN_ENV_KEYS);
-
-describe('imageGenServer', () => {
-  const originalEnv: Record<string, string | undefined> = {};
-  const originalCwd = process.cwd;
-
-  beforeEach(() => {
-    ENV_KEYS.forEach((key) => {
-      originalEnv[key] = process.env[key];
-      delete process.env[key];
-    });
-    delete process.env.AIONUI_IMG_PROXY;
-    executeMediaGenerationMock.mockReset();
-    process.cwd = vi.fn().mockReturnValue('/workspace/conversation-1');
-  });
-
-  afterEach(() => {
-    ENV_KEYS.forEach((key) => {
-      if (originalEnv[key] === undefined) delete process.env[key];
-      else process.env[key] = originalEnv[key];
-    });
-    process.cwd = originalCwd;
-  });
-
-  describe('getProviderFromEnv', () => {
-    it('returns null when platform or model is missing', () => {
-      expect(getProviderFromEnv()).toBeNull();
-
-      process.env[IMAGE_GEN_ENV_KEYS.platform] = 'gemini';
-      expect(getProviderFromEnv()).toBeNull();
-    });
-
-    it('builds a provider from env, preferring the real provider name', () => {
-      process.env[IMAGE_GEN_ENV_KEYS.platform] = 'gemini';
-      process.env[IMAGE_GEN_ENV_KEYS.model] = 'gemini-image';
-      process.env[IMAGE_GEN_ENV_KEYS.baseUrl] = 'https://generativelanguage.googleapis.com';
-      process.env[IMAGE_GEN_ENV_KEYS.apiKey] = 'secret';
-      process.env[IMAGE_GEN_ENV_KEYS.providerName] = 'My Gemini';
-
-      const provider = getProviderFromEnv();
-
-      expect(provider).toMatchObject({
-        name: 'My Gemini',
-        platform: 'gemini',
-        base_url: 'https://generativelanguage.googleapis.com',
-        api_key: 'secret',
-        use_model: 'gemini-image',
+/** A fake main-process media service speaking the real 4-byte-length-prefixed protocol. */
+function startFakeMediaService(
+  respond: (request: Frame) => Frame | Frame[]
+): Promise<{ port: number; close: () => Promise<void> }> {
+  return new Promise((resolve) => {
+    const server = net.createServer((socket) => {
+      let buffer = Buffer.alloc(0);
+      socket.on('data', (chunk: Buffer) => {
+        buffer = Buffer.concat([buffer, chunk]);
+        while (buffer.length >= 4) {
+          const len = buffer.readUInt32BE(0);
+          if (buffer.length < 4 + len) break;
+          const json = buffer.subarray(4, 4 + len).toString('utf-8');
+          buffer = buffer.subarray(4 + len);
+          const request = JSON.parse(json) as Frame;
+          const frames = ([] as Frame[]).concat(respond(request));
+          for (const frame of frames) {
+            const body = Buffer.from(JSON.stringify(frame), 'utf-8');
+            const header = Buffer.alloc(4);
+            header.writeUInt32BE(body.length, 0);
+            socket.write(Buffer.concat([header, body]));
+          }
+          socket.end();
+        }
       });
     });
-
-    it('falls back to the builtin server name when providerName is absent', () => {
-      process.env[IMAGE_GEN_ENV_KEYS.platform] = 'gemini';
-      process.env[IMAGE_GEN_ENV_KEYS.model] = 'gemini-image';
-
-      expect(getProviderFromEnv()?.name).toBe('aionui-image-generation');
+    server.listen(0, '127.0.0.1', () => {
+      const port = (server.address() as net.AddressInfo).port;
+      resolve({ port, close: () => new Promise((res) => server.close(() => res())) });
     });
   });
+}
 
-  describe('normalizeImageUris', () => {
-    it('returns an empty array for undefined', () => {
-      expect(normalizeImageUris(undefined)).toEqual([]);
-    });
-
-    it('passes an array through unchanged', () => {
-      expect(normalizeImageUris(['a.png', 'b.png'])).toEqual(['a.png', 'b.png']);
-    });
-
-    it('parses a JSON-stringified array', () => {
-      expect(normalizeImageUris('["a.png","b.png"]' as unknown as string[])).toEqual(['a.png', 'b.png']);
-    });
-
-    it('wraps a single non-JSON string in an array', () => {
-      expect(normalizeImageUris('a.png' as unknown as string[])).toEqual(['a.png']);
-    });
+describe('imageGenServer (thin shell)', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
   });
 
-  describe('handleImageGeneration', () => {
-    it('errors without calling executeMediaGeneration when no model is configured', async () => {
+  describe('with the media service unavailable (MEDIA_MCP_PORT unset)', () => {
+    beforeEach(() => {
+      vi.resetModules();
+      vi.stubEnv('MEDIA_MCP_PORT', '');
+    });
+
+    it('requirePort reports the service as unavailable', async () => {
+      const { requirePort } = await import('@process/resources/builtinMcp/imageGenServer');
+      expect(requirePort()).toContain('media generation service is not available');
+    });
+
+    it('handleImageGeneration fails fast without attempting a connection', async () => {
+      const { handleImageGeneration } = await import('@process/resources/builtinMcp/imageGenServer');
       const result = await handleImageGeneration({ prompt: 'a cat' });
-
       expect(result.isError).toBe(true);
-      expect(result.content[0].text).toContain('not configured');
-      expect(executeMediaGenerationMock).not.toHaveBeenCalled();
+      expect(result.content[0].text).toContain('MEDIA_MCP_PORT is unset');
     });
 
-    it('dispatches to executeMediaGeneration with the trusted cwd as workspaceDir, never a model-supplied path', async () => {
-      process.env[IMAGE_GEN_ENV_KEYS.platform] = 'openai';
-      process.env[IMAGE_GEN_ENV_KEYS.model] = 'dall-e-3';
-      process.env.AIONUI_IMG_PROXY = 'http://proxy.local:8080';
-      executeMediaGenerationMock.mockResolvedValue({
-        success: true,
-        assets: [],
-        text: 'Generated image saved to: /workspace/conversation-1/img-1.png',
+    it('handleMediaJobStatus fails fast without attempting a connection', async () => {
+      const { handleMediaJobStatus } = await import('@process/resources/builtinMcp/imageGenServer');
+      const result = await handleMediaJobStatus({});
+      expect(result.isError).toBe(true);
+    });
+  });
+
+  describe('with a real (fake) media service listening', () => {
+    let close: () => Promise<void>;
+
+    async function withService(respond: (request: Frame) => Frame | Frame[]) {
+      const service = await startFakeMediaService(respond);
+      close = service.close;
+      vi.resetModules();
+      vi.stubEnv('MEDIA_MCP_PORT', String(service.port));
+      return import('@process/resources/builtinMcp/imageGenServer');
+    }
+
+    afterEach(async () => {
+      await close?.();
+    });
+
+    it('renderJob lists saved assets, the job id/status line, and any error', async () => {
+      const { renderJob } = await withService(() => ({ type: 'result', success: true }));
+      const text = renderJob(
+        {
+          jobId: 'job-1',
+          kind: 'image',
+          status: 'done',
+          assets: [{ filePath: '/ws/img-1.png', relativePath: 'img-1.png', mimeType: 'image/png', kind: 'image' }],
+        },
+        'fallback'
+      );
+      expect(text).toContain('Generated image saved to: /ws/img-1.png');
+      expect(text).toContain('(job job-1, status done)');
+    });
+
+    it('renderJob falls back to the provided text when there is no job', async () => {
+      const { renderJob } = await withService(() => ({ type: 'result', success: true }));
+      expect(renderJob(undefined, 'no job data')).toBe('no job data');
+    });
+
+    it('handleImageGeneration maps tool args to a generate request and renders a successful job', async () => {
+      let seenRequest: Frame | undefined;
+      const { handleImageGeneration } = await withService((request) => {
+        seenRequest = request;
+        return {
+          type: 'result',
+          success: true,
+          job: { jobId: 'job-2', kind: 'image', status: 'done', assets: [] },
+        };
       });
 
       const result = await handleImageGeneration({
-        prompt: 'a cat',
+        prompt: 'a red bicycle',
         image_uris: ['ref.png'],
         size: '1024x1024',
         aspect_ratio: '1:1',
         n: 2,
         quality: 'hd',
-        seed: 42,
+        seed: 7,
         negative_prompt: 'blurry',
       });
 
-      expect(executeMediaGenerationMock).toHaveBeenCalledWith({
+      expect(seenRequest).toMatchObject({
+        op: 'generate',
         kind: 'image',
-        prompt: 'a cat',
+        prompt: 'a red bicycle',
+        inputUris: ['ref.png'],
         params: {
           size: '1024x1024',
           aspectRatio: '1:1',
           n: 2,
           quality: 'hd',
-          seed: 42,
+          seed: 7,
           negativePrompt: 'blurry',
         },
-        inputUris: ['ref.png'],
-        provider: expect.objectContaining({ platform: 'openai', use_model: 'dall-e-3' }),
-        workspaceDir: '/workspace/conversation-1',
-        proxy: 'http://proxy.local:8080',
       });
+      // Never a model-supplied workspace_dir — only the shell's own trusted cwd (see #3906).
+      expect(seenRequest).toHaveProperty('workspaceDir');
+      expect((seenRequest as Frame).workspace_dir).toBeUndefined();
       expect(result.isError).toBeUndefined();
-      expect(result.content[0].text).toContain('Generated image saved to');
+      expect(result.content[0].text).toContain('(job job-2, status done)');
     });
 
-    it('surfaces a failed generation as an error result', async () => {
-      process.env[IMAGE_GEN_ENV_KEYS.platform] = 'openai';
-      process.env[IMAGE_GEN_ENV_KEYS.model] = 'dall-e-3';
-      executeMediaGenerationMock.mockResolvedValue({
-        success: false,
-        assets: [],
-        text: 'Error: rate limited',
-        error: 'rate-limited',
+    it('handleVideoGeneration passes first_frame_image as the sole input URI', async () => {
+      let seenRequest: Frame | undefined;
+      const { handleVideoGeneration } = await withService((request) => {
+        seenRequest = request;
+        return { type: 'result', success: true, job: { jobId: 'job-3', kind: 'video', status: 'done' } };
       });
+
+      await handleVideoGeneration({ prompt: 'a flying cat', first_frame_image: 'first.png', duration_seconds: 5 });
+
+      expect(seenRequest).toMatchObject({
+        op: 'generate',
+        kind: 'video',
+        inputUris: ['first.png'],
+        params: expect.objectContaining({ firstFrameImage: 'first.png', durationSeconds: 5 }),
+      });
+    });
+
+    it('handleImageGeneration surfaces a job-level failure, including the job id for follow-up', async () => {
+      const { handleImageGeneration } = await withService(() => ({
+        type: 'result',
+        success: false,
+        error: 'rate limited',
+        job: { jobId: 'job-4', kind: 'image', status: 'failed', error: 'rate limited' },
+      }));
 
       const result = await handleImageGeneration({ prompt: 'a cat' });
 
       expect(result.isError).toBe(true);
-      expect(result.content[0].text).toBe('Error: rate limited');
+      expect(result.content[0].text).toBe('Error generating image: rate limited (job job-4)');
     });
+
+    it('handleMediaJobStatus renders a single job when job_id is given', async () => {
+      const { handleMediaJobStatus } = await withService(() => ({
+        type: 'result',
+        success: true,
+        job: { jobId: 'job-5', kind: 'video', status: 'polling' },
+      }));
+
+      const result = await handleMediaJobStatus({ job_id: 'job-5' });
+
+      expect(result.content[0].text).toContain('(job job-5, status polling)');
+    });
+
+    it('handleMediaJobStatus lists recent jobs when no job_id is given', async () => {
+      const { handleMediaJobStatus } = await withService(() => ({
+        type: 'result',
+        success: true,
+        jobs: [
+          { jobId: 'a', kind: 'image', status: 'done' },
+          { jobId: 'b', kind: 'video', status: 'failed', error: 'timeout' },
+        ],
+      }));
+
+      const result = await handleMediaJobStatus({});
+
+      expect(result.content[0].text).toBe('- a [image] done\n- b [video] failed — timeout');
+    });
+
+    it('handleMediaJobStatus reports "no jobs yet" for an empty list', async () => {
+      const { handleMediaJobStatus } = await withService(() => ({ type: 'result', success: true, jobs: [] }));
+
+      const result = await handleMediaJobStatus({});
+
+      expect(result.content[0].text).toBe('No media generation jobs yet.');
+    });
+  });
+
+  it('reports a clear connection error, mentioning the job-status fallback, when nothing is listening', async () => {
+    // Bind a real server to grab a free port, then close it immediately —
+    // guarantees ECONNREFUSED rather than guessing at an unused port number.
+    const probe = await startFakeMediaService(() => ({ type: 'result', success: true }));
+    await probe.close();
+
+    vi.resetModules();
+    vi.stubEnv('MEDIA_MCP_PORT', String(probe.port));
+    const { handleImageGeneration } = await import('@process/resources/builtinMcp/imageGenServer');
+
+    const result = await handleImageGeneration({ prompt: 'a cat' });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('one_media_job_status');
   });
 });

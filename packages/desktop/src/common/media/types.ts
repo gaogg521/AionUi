@@ -106,6 +106,18 @@ export type MediaGenRequest = {
   proxy?: string;
   signal?: AbortSignal;
   onProgress?: (update: MediaProgressUpdate) => void;
+  /**
+   * Form C only: skip submission and resume polling an already-submitted remote
+   * task. This is what makes a job survive an app restart — the request was
+   * already paid for, so it must be picked back up rather than re-submitted.
+   */
+  resumeTaskId?: string;
+  /**
+   * Form C only: called the instant a remote task id exists, before the first
+   * poll. The job engine persists it here; anything later would leave a window
+   * where a crash orphans a paid-for task.
+   */
+  onTaskSubmitted?: (taskId: string) => void;
 };
 
 export type MediaGenOutcome = {

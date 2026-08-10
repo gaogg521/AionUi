@@ -5,7 +5,14 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { clipParamsToSpec, EXECUTABLE_FORMS, isMediaGenSupported, resolveMediaModelSpec } from '@/common/media/catalog';
+import {
+  clipParamsToSpec,
+  EXECUTABLE_FORMS,
+  IMPLEMENTED_ENDPOINT_STYLES,
+  isMediaGenSupported,
+  resolveMediaModelSpec,
+} from '@/common/media/catalog';
+import { REGISTERED_DRIVER_IDS } from '@/common/media/adapters/taskDrivers';
 import { isImageGenSupported } from '@/common/utils/imageModelAllowlist';
 
 describe('media catalog resolution', () => {
@@ -85,8 +92,8 @@ describe('media catalog resolution', () => {
     });
   });
 
-  describe('Form C gating (async engine not shipped yet)', () => {
-    it('resolves WanX to a Form C spec but reports unsupported', () => {
+  describe('Form C (async task APIs, driven by the media job engine)', () => {
+    it('supports WanX images now that the async engine exists', () => {
       const provider = {
         platform: 'openai',
         base_url: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
@@ -94,15 +101,36 @@ describe('media catalog resolution', () => {
       };
       const spec = resolveMediaModelSpec('image', provider, 'wanx2.1-t2i-turbo');
       expect(spec?.form).toBe('C');
-      expect(EXECUTABLE_FORMS).not.toContain('C');
-      expect(isImageGenSupported(provider, 'wanx2.1-t2i-turbo')).toBe(false);
+      expect(spec?.endpointStyle).toBe('dashscope-task');
+      expect(EXECUTABLE_FORMS).toContain('C');
+      expect(isImageGenSupported(provider, 'wanx2.1-t2i-turbo')).toBe(true);
     });
 
-    it('video catalog resolves seedance but stays gated', () => {
+    it('supports seedance video via the Ark driver', () => {
       const provider = { platform: 'openai', base_url: 'https://ark.cn-beijing.volces.com/api/v3', name: 'Ark' };
       const spec = resolveMediaModelSpec('video', provider, 'doubao-seedance-1-0-pro');
       expect(spec?.form).toBe('C');
-      expect(isMediaGenSupported('video', provider, 'doubao-seedance-1-0-pro')).toBe(false);
+      expect(isMediaGenSupported('video', provider, 'doubao-seedance-1-0-pro')).toBe(true);
+    });
+
+    // Catalog entries exist for vendors whose drivers are not written yet.
+    // Offering those in the picker would fail only at call time, so they must
+    // report unsupported until a driver lands.
+    it.each([
+      ['kling-v1-6', 'kling'],
+      ['sora-2', 'openai-video'],
+      ['cogvideox-3', 'cogvideox'],
+    ])('reports %s unsupported while its %s driver is unimplemented', (model, endpointStyle) => {
+      const provider = { platform: 'openai', base_url: 'https://gateway.example.com/v1', name: 'Gateway' };
+      const spec = resolveMediaModelSpec('video', provider, model);
+      expect(spec?.endpointStyle).toBe(endpointStyle);
+      expect(IMPLEMENTED_ENDPOINT_STYLES).not.toContain(endpointStyle);
+      expect(isMediaGenSupported('video', provider, model)).toBe(false);
+    });
+
+    it('keeps the catalog list and the driver registry in sync', () => {
+      // Drift here is what would let a half-finished driver reach the picker.
+      expect([...IMPLEMENTED_ENDPOINT_STYLES].toSorted()).toEqual([...REGISTERED_DRIVER_IDS].toSorted());
     });
   });
 

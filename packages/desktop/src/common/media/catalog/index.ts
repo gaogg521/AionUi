@@ -21,8 +21,10 @@ export { BUILTIN_IMAGE_MODELS } from './imageModels';
 export { BUILTIN_VIDEO_MODELS } from './videoModels';
 export {
   EXECUTABLE_FORMS,
+  IMPLEMENTED_ENDPOINT_STYLES,
   clipParamsToSpec,
   isMediaGenSupported,
+  isSpecExecutable,
   resolveMediaModelSpec,
   type ClippedParams,
   type MediaProviderShape,

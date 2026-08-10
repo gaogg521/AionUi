@@ -96,18 +96,33 @@ describe('executeMediaGeneration dispatch decisions', () => {
     expect(result.text).toContain('not recognized as a video generation model');
   });
 
-  it('reports form-not-executable for a catalog-matched Form C model (job engine not built yet)', async () => {
+  it('dispatches a catalog-matched Form C model to the task-poll adapter (job engine now built)', async () => {
     const ws = createWorkspace();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ output: { task_id: 'task-abc' } }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      )
+    );
 
     const result = await executeMediaGeneration({
       kind: 'image',
       prompt: 'a mountain',
       provider: { ...provider, platform: 'dashscope', use_model: 'wanx2.1-t2i-turbo' },
       workspaceDir: ws,
+      signal: AbortSignal.timeout(50),
     });
 
-    expect(result).toMatchObject({ success: false, error: 'form-not-executable' });
-    expect(result.text).toContain('async task API');
+    // Not rejected as "unsupported" or "not executable" — it genuinely tried
+    // to run the task (and then failed on the abort, since this test only
+    // cares about dispatch, not the full submit/poll/download round trip —
+    // that's TaskPollAdapter's own test suite).
+    expect(result.error).not.toBe('form-not-executable');
+    expect(result.error).not.toBe('unsupported-model');
+    vi.unstubAllGlobals();
   });
 
   it('falls back through Form B for an unrecognized image model, preserving pre-catalog behavior', async () => {
