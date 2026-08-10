@@ -9,6 +9,7 @@ import { removeImageGenerationEnvKeys, resolveImageGenerationMcpEnv } from '@/co
 import { mcpService } from '@/common/adapter/ipcBridge';
 import { type IMcpServer, BUILTIN_IMAGE_GEN_ID, BUILTIN_IMAGE_GEN_NAME } from '@/common/config/storage';
 import { isImageGenSupported } from '@/common/utils/imageModelAllowlist';
+import { isMediaGenSupported } from '@/common/media/catalog';
 import { Divider, Form, Tooltip, Message, Modal, Switch } from '@arco-design/web-react';
 import { Help } from '@icon-park/react';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
@@ -273,6 +274,7 @@ const ToolsModalContent: React.FC = () => {
   // component unmounts don't hit a null Arco context holder (null.addInstance crash).
   const mcpMessage = useMountedMessage(rawMcpMessage);
   const [imageGenerationModel, setImageGenerationModel] = useState<ImageGenerationModelSetting | undefined>();
+  const [videoGenerationModel, setVideoGenerationModel] = useState<ImageGenerationModelSetting | undefined>();
   const [isUpdatingImageGeneration, setIsUpdatingImageGeneration] = useState(false);
   const { modelListWithImage: data } = useConfigModelListWithImage();
   const { mcpServers, extensionMcpServers, saveMcpServers, setMcpServers, isMcpServersLoading } = useMcpServers();
@@ -289,12 +291,28 @@ const ToolsModalContent: React.FC = () => {
       .filter((provider) => provider.models.length > 0);
   }, [data]);
 
+  const videoGenerationModelList = useMemo(() => {
+    if (!data) return [];
+    return (data || [])
+      .map((provider) => ({
+        ...provider,
+        models: provider.models.filter((modelName) => isMediaGenSupported('video', provider, modelName)),
+      }))
+      .filter((provider) => provider.models.length > 0);
+  }, [data]);
+
   useEffect(() => {
     const loadConfigs = async () => {
       try {
-        const storedModel = await getClientBusinessSetting('tools.imageGenerationModel');
+        const [storedModel, storedVideoModel] = await Promise.all([
+          getClientBusinessSetting('tools.imageGenerationModel'),
+          getClientBusinessSetting('tools.videoGenerationModel'),
+        ]);
         if (storedModel) {
           setImageGenerationModel(storedModel);
+        }
+        if (storedVideoModel) {
+          setVideoGenerationModel(storedVideoModel);
         }
       } catch (error) {
         console.error('Failed to load tools config:', error);
@@ -410,6 +428,55 @@ const ToolsModalContent: React.FC = () => {
       console.error('Failed to sync image generation MCP env after provider change:', error);
     });
   }, [data, imageGenerationModel, syncMcpServerEnv]);
+
+  // Keep the saved video model as a provider/model reference. Secrets stay in providers.
+  // Unlike image generation, video generation reads client settings directly at
+  // execution time, so there is no MCP transport.env to keep in sync here.
+  useEffect(() => {
+    if (!videoGenerationModel || !data) return;
+
+    const currentProvider = data.find((p) => p.id === videoGenerationModel.id);
+
+    if (!currentProvider) {
+      setVideoGenerationModel(undefined);
+      removeClientBusinessSetting('tools.videoGenerationModel').catch((error) => {
+        console.error('Failed to remove video generation model config:', error);
+      });
+      return;
+    }
+
+    if (videoGenerationModel.api_key || videoGenerationModel.base_url) {
+      const sanitizedModel = {
+        ...videoGenerationModel,
+        name: currentProvider.name,
+        platform: currentProvider.platform,
+        base_url: '',
+        api_key: '',
+      };
+      setVideoGenerationModel(sanitizedModel);
+      setClientBusinessSetting('tools.videoGenerationModel', sanitizedModel).catch((error) => {
+        console.error('Failed to sanitize video generation model config:', error);
+      });
+    }
+  }, [data, videoGenerationModel]);
+
+  const handleVideoGenerationModelChange = useCallback((value: Partial<ImageGenerationModelSetting>) => {
+    setVideoGenerationModel((prev) => {
+      const next = {
+        ...prev,
+        id: value.id,
+        name: value.name,
+        platform: value.platform,
+        base_url: '',
+        api_key: '',
+        use_model: value.use_model,
+      } as ImageGenerationModelSetting;
+      setClientBusinessSetting('tools.videoGenerationModel', next).catch((error) => {
+        console.error('Failed to update video generation model config:', error);
+      });
+      return next;
+    });
+  }, []);
 
   const handleImageGenerationModelChange = useCallback(
     (value: Partial<ImageGenerationModelSetting>) => {
@@ -610,6 +677,74 @@ const ToolsModalContent: React.FC = () => {
                         <Help theme='outline' size='14' />
                       </a>
                     </Tooltip>
+                  </div>
+                )}
+              </Form.Item>
+            </Form>
+          </div>
+          {/* 视频生成 */}
+          <div className='px-[12px] md:px-[32px] py-[24px] bg-2 rd-12px md:rd-16px border border-border-2'>
+            <div className='flex items-center justify-between mb-16px'>
+              <span className='text-14px text-t-primary'>{t('settings.videoGeneration')}</span>
+            </div>
+
+            <Divider className='mt-0px mb-20px' />
+
+            <Form layout='horizontal' labelAlign='left' className='space-y-12px'>
+              <Form.Item
+                label={t('settings.videoGenerationModel')}
+                tooltip={
+                  <div className='space-y-4px'>
+                    <div>{t('settings.videoGenSupportedTooltipTitle')}</div>
+                    <ul className='list-disc pl-16px m-0'>
+                      <li>{t('settings.videoGenSupportedTooltipSeedance')}</li>
+                      <li>{t('settings.videoGenSupportedTooltipWanx')}</li>
+                    </ul>
+                    <div>{t('settings.videoGenUnsupportedTooltip')}</div>
+                  </div>
+                }
+              >
+                {videoGenerationModelList.length > 0 ? (
+                  <AionSelect
+                    value={
+                      videoGenerationModel?.id && videoGenerationModel?.use_model
+                        ? `${videoGenerationModel.id}|${videoGenerationModel.use_model}`
+                        : undefined
+                    }
+                    onChange={(value) => {
+                      const [platformId, modelName] = value.split('|');
+                      const platform = videoGenerationModelList.find((p) => p.id === platformId);
+                      if (platform) {
+                        handleVideoGenerationModelChange({
+                          ...platform,
+                          use_model: modelName,
+                        });
+                      }
+                    }}
+                  >
+                    {videoGenerationModelList.map(({ models, ...platform }) => (
+                      <AionSelect.OptGroup label={platform.name} key={platform.id}>
+                        {models.map((modelName) => (
+                          <AionSelect.Option key={platform.id + modelName} value={platform.id + '|' + modelName}>
+                            {modelName}
+                          </AionSelect.Option>
+                        ))}
+                      </AionSelect.OptGroup>
+                    ))}
+                  </AionSelect>
+                ) : (
+                  <div className='text-t-secondary flex items-center'>
+                    {t('settings.noAvailable')}
+                    {navigateToSettingsTab ? (
+                      <a
+                        className='text-inherit underline underline-offset-2 cursor-pointer'
+                        onClick={() => navigateToSettingsTab('model')}
+                      >
+                        {t('settings.goToModelSettings')}
+                      </a>
+                    ) : (
+                      t('settings.goToModelSettings')
+                    )}
                   </div>
                 )}
               </Form.Item>
