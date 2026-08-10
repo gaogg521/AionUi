@@ -68,5 +68,24 @@ export async function readJsonOrThrow(response: Response, what: string): Promise
     }
     throw new Error(`${what} failed: HTTP ${response.status}${detail ? ` — ${detail}` : ''}`);
   }
-  return (await response.json()) as Record<string, unknown>;
+
+  // A 2xx does not guarantee a JSON body. Gateways that pass a task API through
+  // to an upstream vendor can answer 200 with an empty body when the caller's
+  // key is not entitled to the model (observed on a real LiteLLM deployment
+  // fronting Volcano Ark). Letting `response.json()` throw there surfaces a bare
+  // "Unexpected end of JSON input", which names neither the endpoint nor the
+  // likely cause — the same kind of dead-end error the version-prefix 405 was.
+  const text = await response.text();
+  if (!text.trim()) {
+    throw new Error(
+      `${what} failed: the endpoint returned HTTP ${response.status} with an empty body. ` +
+        'This usually means the API key is not entitled to this model, or the gateway ' +
+        'silently dropped the upstream response.'
+    );
+  }
+  try {
+    return JSON.parse(text) as Record<string, unknown>;
+  } catch {
+    throw new Error(`${what} failed: expected JSON but got — ${text.slice(0, 300)}`);
+  }
 }

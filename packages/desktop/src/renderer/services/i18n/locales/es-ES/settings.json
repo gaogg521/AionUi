@@ -644,7 +644,7 @@
   "imageGenSupportedTooltipOpenRouter": "Modelos de imagen tipo chat de OpenRouter (ej. nano-banana, gemini-image)",
   "imageGenSupportedTooltipAntigravity": "AntigravityTools (gemini-3-pro-image)",
   "imageGenSupportedTooltipImagesApi": "API de imágenes de OpenAI y pasarelas compatibles (DALL·E, gpt-image-1, FLUX, Stable Diffusion, Seedream, CogView, etc.)",
-  "imageGenUnsupportedTooltip": "Los modelos con API de tareas asíncronas (WanX, Jimeng, etc.) llegarán en una versión posterior; Imagen aún no es compatible.",
+  "imageGenUnsupportedTooltip": "Los modelos con API de tareas asíncronas (WanX, Jimeng) ya son compatibles; Imagen y Midjourney aún no.",
   "imageGenerationGuide": "Guía de configuración de modelos de imagen",
   "noAvailable": "Sin modelos de imagen disponibles. ",
   "goToModelSettings": "Ir a configurar",

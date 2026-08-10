@@ -85,6 +85,16 @@ describe('arkDriver', () => {
         'Ark task submission returned no id'
       );
     });
+
+    it('gives a diagnosable error on a 2xx with an empty body, instead of a bare JSON parse error', async () => {
+      // Observed on a real LiteLLM deployment: an unentitled key gets proxied
+      // through to Ark as HTTP 200 with nothing in the body.
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('', { status: 200 })));
+
+      await expect(arkDriver.submit({ ...baseCtx, prompt: 'x', inputs: [], params: {} })).rejects.toThrow(
+        /empty body.*not entitled/s
+      );
+    });
   });
 
   describe('poll', () => {

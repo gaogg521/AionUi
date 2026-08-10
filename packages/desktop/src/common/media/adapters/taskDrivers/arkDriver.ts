@@ -15,6 +15,7 @@
  * driver builds a decorated prompt instead of a parameters object.
  */
 
+import { ensureVersionedBaseUrl } from '../baseUrl';
 import {
   readJsonOrThrow,
   type TaskDriver,
@@ -24,9 +25,17 @@ import {
   type TaskSubmitContext,
 } from './types';
 
+/**
+ * Ark's own root (`.../api/v3`) already carries a version segment, so for a
+ * native provider this is a no-op. The normalization matters for the other way
+ * users reach Seedance: an OpenAI-compatible gateway (LiteLLM and friends) that
+ * proxies the task API. Those roots are configured for chat without a version
+ * segment, and the gateway's front proxy only routes the versioned path — the
+ * unversioned one comes back as a bare 405/404 that names no cause. Same
+ * failure the images path hit on a real LiteLLM deployment.
+ */
 const apiRoot = (baseUrl: string): string => {
-  const trimmed = baseUrl.replace(/\/+$/, '');
-  return trimmed || 'https://ark.cn-beijing.volces.com/api/v3';
+  return ensureVersionedBaseUrl(baseUrl) || 'https://ark.cn-beijing.volces.com/api/v3';
 };
 
 const headers = (apiKey: string): Record<string, string> => ({
