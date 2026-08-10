@@ -137,14 +137,17 @@ describe('arkDriver', () => {
       expect(result).toEqual({ state: 'failed', error: 'Ark reported success but returned no content' });
     });
 
-    it.each(['failed', 'cancelled', 'canceled'])('maps a terminal "%s" status to a failed poll result', async (status) => {
-      vi.stubGlobal(
-        'fetch',
-        vi.fn().mockResolvedValue(jsonResponse({ status, error: { message: 'vendor says no' } }))
-      );
+    it.each(['failed', 'cancelled', 'canceled'])(
+      'maps a terminal "%s" status to a failed poll result',
+      async (status) => {
+        vi.stubGlobal(
+          'fetch',
+          vi.fn().mockResolvedValue(jsonResponse({ status, error: { message: 'vendor says no' } }))
+        );
 
-      expect(await arkDriver.poll(pollCtx, 'task-1')).toEqual({ state: 'failed', error: 'vendor says no' });
-    });
+        expect(await arkDriver.poll(pollCtx, 'task-1')).toEqual({ state: 'failed', error: 'vendor says no' });
+      }
+    );
 
     it('falls back to a generic message when a failed status carries no error detail', async () => {
       vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse({ status: 'failed' })));

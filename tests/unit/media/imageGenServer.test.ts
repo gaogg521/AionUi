@@ -22,7 +22,9 @@ import net from 'node:net';
 type Frame = Record<string, unknown>;
 
 /** A fake main-process media service speaking the real 4-byte-length-prefixed protocol. */
-function startFakeMediaService(respond: (request: Frame) => Frame | Frame[]): Promise<{ port: number; close: () => Promise<void> }> {
+function startFakeMediaService(
+  respond: (request: Frame) => Frame | Frame[]
+): Promise<{ port: number; close: () => Promise<void> }> {
   return new Promise((resolve) => {
     const server = net.createServer((socket) => {
       let buffer = Buffer.alloc(0);

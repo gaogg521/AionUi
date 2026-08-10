@@ -192,4 +192,101 @@ describe('TaskPollAdapter (Form C)', () => {
     expect(outcome.success).toBe(true);
     expect(calls).toBeGreaterThan(2);
   });
+
+  it('reports no-spec when the request has no catalog spec at all', async () => {
+    const outcome = await adapter.generate(buildRequest({ spec: null }));
+
+    expect(outcome).toMatchObject({ success: false, error: 'no-spec' });
+  });
+
+  it('reports no-driver when the spec names an endpoint style with no registered driver', async () => {
+    const request = buildRequest();
+    const outcome = await adapter.generate({
+      ...request,
+      spec: request.spec ? { ...request.spec, endpointStyle: 'not-a-real-driver' } : null,
+    });
+
+    expect(outcome).toMatchObject({ success: false, error: 'no-driver' });
+  });
+
+  it('gives up and surfaces the error once consecutive poll failures exceed the tolerance', async () => {
+    let pollAttempts = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string | URL, init?: RequestInit) => {
+        const href = String(url);
+        if (init?.method === 'POST' && href.includes('image-synthesis')) {
+          return new Response(JSON.stringify({ output: { task_id: 'task-abc' } }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          });
+        }
+        pollAttempts++;
+        return new Response('server error', { status: 500 });
+      })
+    );
+
+    const outcome = await adapter.generate(buildRequest());
+
+    expect(outcome.success).toBe(false);
+    // MAX_CONSECUTIVE_POLL_ERRORS = 5: a transient blip is tolerated, but it
+    // must not retry forever on a task that's actually gone bad.
+    expect(pollAttempts).toBe(5);
+  });
+
+  it('reports empty-result when the succeeded response carries neither base64 data nor a URL', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string | URL, init?: RequestInit) => {
+        const href = String(url);
+        if (init?.method === 'POST' && href.includes('image-synthesis')) {
+          return new Response(JSON.stringify({ output: { task_id: 'task-abc' } }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          });
+        }
+        // DashScope's own driver would call this "no results", but simulate a
+        // vendor returning a results array whose entries carry nothing usable.
+        return new Response(JSON.stringify({ output: { task_status: 'SUCCEEDED', results: [{ message: 'ok' }] } }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      })
+    );
+
+    const outcome = await adapter.generate(buildRequest());
+
+    expect(outcome).toMatchObject({ success: false, error: 'DashScope reported success but returned no results' });
+  });
+
+  it('inlines a local reference file as a data URL before submitting (task APIs fetch by URL server-side)', async () => {
+    const refPath = path.join(workspaceDir, 'ref.jpg');
+    await fs.promises.writeFile(refPath, Buffer.from(TINY_PNG_B64, 'base64'));
+    let submittedInput: Record<string, unknown> | undefined;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string | URL, init?: RequestInit) => {
+        const href = String(url);
+        if (init?.method === 'POST' && href.includes('image-synthesis')) {
+          submittedInput = JSON.parse(String(init.body)).input;
+          return new Response(JSON.stringify({ output: { task_id: 'task-abc' } }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          });
+        }
+        return new Response(
+          JSON.stringify({
+            output: { task_status: 'SUCCEEDED', results: [{ url: 'https://cdn.example.com/out.png' }] },
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } }
+        );
+      })
+    );
+
+    const outcome = await adapter.generate(buildRequest({ inputUris: ['ref.jpg'] }));
+
+    expect(outcome.success).toBe(true);
+    const refImg = submittedInput?.ref_img as string | undefined;
+    expect(refImg).toMatch(/^data:image\/jpeg;base64,/);
+  });
 });
