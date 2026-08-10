@@ -27,11 +27,26 @@ export type MediaProviderShape = {
 
 /**
  * API forms executable in the current build.
- * Phase 1: A + B (synchronous). Phase 2 adds 'C' (async job engine).
+ * A + B are synchronous; C is submit-and-poll, driven by the media job engine
+ * (process/services/mediaJob) so it survives tool-call timeouts and restarts.
  * The settings dropdown and the allowlist both gate on this, so users are
  * never offered a model the runtime cannot actually drive.
  */
-export const EXECUTABLE_FORMS: readonly CatalogApiForm[] = ['A', 'B'];
+export const EXECUTABLE_FORMS: readonly CatalogApiForm[] = ['A', 'B', 'C'];
+
+/**
+ * Form C endpoint styles that actually have a driver implemented.
+ *
+ * A catalog entry can describe a vendor before its driver exists (the video
+ * entries were written that way on purpose), so the form alone is not enough to
+ * decide "we can run this" — without this check the picker would offer Kling or
+ * Sora and only fail at call time.
+ *
+ * MUST match the ids registered in `adapters/taskDrivers`. Kept here as data
+ * rather than imported so the catalog stays free of adapter dependencies; a
+ * test asserts the two lists agree.
+ */
+export const IMPLEMENTED_ENDPOINT_STYLES: readonly string[] = ['dashscope-task', 'ark-task'];
 
 /** Platforms whose SDK is not OpenAI-compatible — generic Form A entries must not fire on them. */
 const NON_OPENAI_COMPATIBLE_PLATFORMS = ['anthropic', 'bedrock', 'gemini', 'gemini-vertex-ai'];
@@ -115,6 +130,13 @@ export const resolveMediaModelSpec = (
   return catalogFor(kind).find((spec) => matchesEntry(spec, provider, modelName)) || null;
 };
 
+/** Whether the runtime can actually drive this spec end to end. */
+export const isSpecExecutable = (spec: MediaModelSpec): boolean => {
+  if (!EXECUTABLE_FORMS.includes(spec.form)) return false;
+  if (spec.form === 'C') return IMPLEMENTED_ENDPOINT_STYLES.includes(spec.endpointStyle ?? '');
+  return true;
+};
+
 /** Whether this provider+model is offered in pickers and accepted at runtime. */
 export const isMediaGenSupported = (
   kind: CatalogMediaKind,
@@ -122,7 +144,7 @@ export const isMediaGenSupported = (
   modelName: string
 ): boolean => {
   const spec = resolveMediaModelSpec(kind, provider, modelName);
-  return spec !== null && EXECUTABLE_FORMS.includes(spec.form);
+  return spec !== null && isSpecExecutable(spec);
 };
 
 export type ClippedParams = {

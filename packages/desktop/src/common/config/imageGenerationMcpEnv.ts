@@ -62,12 +62,20 @@ function providerHasModel(provider: IProvider, model: string): boolean {
   return Array.isArray(provider.models) && provider.models.includes(model);
 }
 
+/**
+ * Build the env published to the built-in media MCP server.
+ *
+ * The api_key is deliberately NOT included. Since the generation work moved
+ * into the main process (media job service), the subprocess never calls a
+ * provider itself, so shipping a credential into its environment would be
+ * exposure with no purpose. The remaining keys describe *which* model is
+ * selected, which is what the settings page validates against.
+ */
 function buildEnv(provider: IProvider, model: string): Record<string, string> {
   return {
     [IMAGE_GEN_ENV_KEYS.providerId]: provider.id,
     [IMAGE_GEN_ENV_KEYS.platform]: provider.platform,
     [IMAGE_GEN_ENV_KEYS.baseUrl]: provider.base_url,
-    [IMAGE_GEN_ENV_KEYS.apiKey]: provider.api_key,
     [IMAGE_GEN_ENV_KEYS.model]: model,
     [IMAGE_GEN_ENV_KEYS.providerName]: provider.name,
   };

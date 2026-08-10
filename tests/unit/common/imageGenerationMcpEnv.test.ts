@@ -26,10 +26,21 @@ describe('resolveImageGenerationMcpEnv', () => {
       [IMAGE_GEN_ENV_KEYS.providerId]: '03c8482c',
       [IMAGE_GEN_ENV_KEYS.platform]: 'gemini',
       [IMAGE_GEN_ENV_KEYS.baseUrl]: 'https://generativelanguage.googleapis.com',
-      [IMAGE_GEN_ENV_KEYS.apiKey]: 'provider-key',
       [IMAGE_GEN_ENV_KEYS.model]: 'gemini-3-pro-image-preview',
       [IMAGE_GEN_ENV_KEYS.providerName]: 'Gemini',
     });
+  });
+
+  it('never publishes the api key into the MCP subprocess environment', () => {
+    // Generation runs in the main process now, so the subprocess has no reason
+    // to hold a credential. Regressing this would silently re-expose it.
+    const result = resolveImageGenerationMcpEnv({ id: '03c8482c', use_model: 'gemini-3-pro-image-preview' }, [
+      geminiProvider,
+    ]);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.env[IMAGE_GEN_ENV_KEYS.apiKey]).toBeUndefined();
+    expect(Object.values(result.env)).not.toContain('provider-key');
   });
 
   it('matches legacy env by platform, base URL, and model when provider id is absent', () => {
@@ -44,7 +55,8 @@ describe('resolveImageGenerationMcpEnv', () => {
     if (!result.ok) return;
     expect(result.source).toBe('field-match');
     expect(result.env.AIONUI_IMG_PROVIDER_ID).toBe('03c8482c');
-    expect(result.env.AIONUI_IMG_API_KEY).toBe('provider-key');
+    // The stale key in the existing env must not be carried forward either.
+    expect(result.env.AIONUI_IMG_API_KEY).toBeUndefined();
   });
 
   it('fails loudly when neither provider id nor legacy fields match a provider', () => {

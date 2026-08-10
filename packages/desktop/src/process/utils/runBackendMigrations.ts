@@ -16,6 +16,7 @@ import {
   type ImageGenerationMcpEnvResolveResult,
 } from '@/common/config/imageGenerationMcpEnv';
 import { BUILTIN_IMAGE_GEN_NAME, type IMcpServer, type IProvider } from '@/common/config/storage';
+import { startMediaMcpServer } from '@process/services/mediaJob';
 import { getBuiltinMcpScriptPath, type ProcessConfig as ProcessConfigType } from './initStorage';
 import { migrateAssistantsToBackend } from './migrateAssistants';
 
@@ -124,12 +125,34 @@ function logImageGenerationEnvResolution(
   );
 }
 
+/**
+ * Env for the built-in media MCP server, shared by the create and update paths
+ * so the two cannot drift apart.
+ *
+ * `MEDIA_MCP_PORT` is always taken from the port allocated by THIS app start:
+ * the media service picks the first free port each launch, so carrying the
+ * stored value forward would leave the shell dialling a port nobody is on.
+ * Unrelated keys already present on the row are preserved.
+ */
+function buildImageServerEnv(
+  resolvedEnv: Record<string, string>,
+  existingEnv: Record<string, string> | undefined,
+  mediaPort?: number
+): Record<string, string> {
+  return {
+    ...removeImageGenerationEnvKeys(existingEnv || {}),
+    ...resolvedEnv,
+    ...(mediaPort ? { MEDIA_MCP_PORT: String(mediaPort) } : {}),
+  };
+}
+
 function buildBuiltinImageGenerationServer(
   resolution: ImageGenerationMcpEnvResolveResult,
-  config?: ImageGenerationModelSetting
+  config?: ImageGenerationModelSetting,
+  mediaPort?: number
 ): McpImportServer {
   const scriptPath = getBuiltinMcpScriptPath('builtin-mcp-image-gen');
-  const env = resolution.ok ? resolution.env : {};
+  const env = buildImageServerEnv(resolution.ok ? resolution.env : {}, undefined, mediaPort);
   const serverConfig = {
     command: 'node',
     args: [scriptPath],
@@ -307,7 +330,17 @@ async function ensureBootstrapMcpServersInDb(configFile: ConfigFile): Promise<vo
     existingImageServer?.transport.type === 'stdio' ? existingImageServer.transport.env : undefined;
   const imageEnvResolution = resolveImageGenerationMcpEnv(imageConfig, providers, existingImageEnv);
   logImageGenerationEnvResolution(imageEnvResolution, 'bootstrap');
-  const imageServer = buildBuiltinImageGenerationServer(imageEnvResolution, imageConfig);
+
+  // The media MCP shell forwards every call here; without the port it reports a
+  // clear error rather than silently taking a different code path.
+  let mediaPort: number | undefined;
+  try {
+    mediaPort = await startMediaMcpServer();
+  } catch (error) {
+    console.warn('[Migration] failed to start built-in media generation TCP server', error);
+  }
+
+  const imageServer = buildBuiltinImageGenerationServer(imageEnvResolution, imageConfig, mediaPort);
   const defaultServers = buildDefaultMcpServers();
   const missing = [...defaultServers, imageServer].filter((server) => !existingByName.has(server.name));
   let imageServerUpdated = false;
@@ -343,10 +376,7 @@ async function ensureBootstrapMcpServersInDb(configFile: ConfigFile): Promise<vo
     existingImageServer.transport.type === 'stdio' &&
     imageServer.transport.type === 'stdio'
   ) {
-    const mergedEnv = {
-      ...removeImageGenerationEnvKeys(existingImageServer.transport.env || {}),
-      ...imageEnvResolution.env,
-    };
+    const mergedEnv = buildImageServerEnv(imageEnvResolution.env, existingImageServer.transport.env, mediaPort);
     const updatedTransport = {
       ...imageServer.transport,
       env: mergedEnv,

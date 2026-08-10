@@ -61,12 +61,12 @@ describe('isImageGenSupported', () => {
     expect(isImageGenSupported(provider, 'dall-e-3')).toBe(false);
   });
 
-  it('rejects models whose API form has no adapter yet (async task APIs)', () => {
+  it('accepts async task-API models now that the media job engine drives them', () => {
     const provider = {
       platform: 'custom',
       base_url: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
       name: 'DashScope',
     };
-    expect(isImageGenSupported(provider, 'wanx2.1-t2i-turbo')).toBe(false);
+    expect(isImageGenSupported(provider, 'wanx2.1-t2i-turbo')).toBe(true);
   });
 });

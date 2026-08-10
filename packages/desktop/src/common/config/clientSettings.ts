@@ -13,6 +13,7 @@ export type ClientBusinessSettingMap = {
   'google.config': GoogleClientSetting;
   'mcp.config': IMcpServer[] | undefined;
   'tools.imageGenerationModel': ImageGenerationModelSetting | undefined;
+  'tools.videoGenerationModel': ImageGenerationModelSetting | undefined;
   'tools.speechToText': SpeechToTextConfig | undefined;
   'acp.promptTimeout': number | undefined;
   'acp.agentIdleTimeout': number | undefined;

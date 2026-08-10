@@ -49,6 +49,12 @@ vi.mock('@/process/utils/migrateAssistants', () => ({
   migrateAssistantsToBackend: vi.fn().mockResolvedValue(true),
 }));
 
+// Keep bootstrap hermetic: the real service binds a TCP port and touches
+// userData. This suite is about MCP server config sync, not the job engine.
+vi.mock('@process/services/mediaJob', () => ({
+  startMediaMcpServer: vi.fn().mockResolvedValue(19860),
+}));
+
 const provider: IProvider = {
   id: 'provider-1',
   platform: 'gemini',
@@ -59,11 +65,15 @@ const provider: IProvider = {
   enabled: true,
 };
 
+// No api key: generation moved into the main process, so the subprocess env
+// only names the selected model and carries the media service port.
+// Key order mirrors an already-synced row: the merge keeps non-image keys
+// (the port) first, then re-applies the resolved image keys.
 const imageEnv = {
+  MEDIA_MCP_PORT: '19860',
   [IMAGE_GEN_ENV_KEYS.providerId]: 'provider-1',
   [IMAGE_GEN_ENV_KEYS.platform]: 'gemini',
   [IMAGE_GEN_ENV_KEYS.baseUrl]: 'https://generativelanguage.googleapis.com',
-  [IMAGE_GEN_ENV_KEYS.apiKey]: 'provider-key',
   [IMAGE_GEN_ENV_KEYS.model]: 'gemini-image',
   [IMAGE_GEN_ENV_KEYS.providerName]: 'Gemini',
 };
@@ -193,6 +203,22 @@ describe('runBackendMigrations', () => {
       'no',
       'no'
     );
+  });
+
+  it('refreshes a stale media service port on the image MCP server row', async () => {
+    // The media TCP service takes the first free port each launch, so a row
+    // carrying last run's port would leave the MCP shell dialling nobody.
+    const stale = imageServer();
+    if (stale.transport.type === 'stdio') {
+      stale.transport.env = { ...stale.transport.env, MEDIA_MCP_PORT: '19999' };
+    }
+    listServersMock.mockResolvedValue([stale]);
+
+    await runBackendMigrations(configFile as never);
+
+    expect(updateServerMock).toHaveBeenCalledOnce();
+    const updated = updateServerMock.mock.calls[0][0];
+    expect(updated.data.transport.env.MEDIA_MCP_PORT).toBe('19860');
   });
 
   it('does not sync agents when only the stored image MCP JSON representation differs', async () => {

@@ -30,10 +30,14 @@ export type ExecuteMediaGenerationInput = {
   proxy?: string;
   signal?: AbortSignal;
   onProgress?: (update: MediaProgressUpdate) => void;
+  /** Form C: resume an already-submitted remote task instead of submitting again. */
+  resumeTaskId?: string;
+  /** Form C: receives the remote task id as soon as it exists (persist it here). */
+  onTaskSubmitted?: (taskId: string) => void;
 };
 
 export async function executeMediaGeneration(input: ExecuteMediaGenerationInput): Promise<MediaGenOutcome> {
-  const { kind, prompt, provider, proxy, signal, onProgress } = input;
+  const { kind, prompt, provider, proxy, signal, onProgress, resumeTaskId, onTaskSubmitted } = input;
   const requestedParams = input.params ?? {};
   const inputUris = input.inputUris ?? [];
 
@@ -111,6 +115,8 @@ export async function executeMediaGeneration(input: ExecuteMediaGenerationInput)
     proxy,
     signal,
     onProgress,
+    resumeTaskId,
+    onTaskSubmitted,
   });
 
   // Surface asset paths in the text (agent-facing contract: keep the
