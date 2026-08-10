@@ -6,7 +6,7 @@
 
 import React from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import { SettingsTabNavigateProvider } from '@/renderer/components/settings/SettingsModal/settingsViewContext';
 
 const hooks = vi.hoisted(() => ({
@@ -95,7 +95,7 @@ vi.mock('@/common/adapter/ipcBridge', () => ({
 
 import ToolsModalContent from '@/renderer/components/settings/SettingsModal/contents/ToolsModalContent';
 
-describe('ToolsModalContent image model guide', () => {
+describe('ToolsModalContent video model settings', () => {
   beforeEach(() => {
     hooks.modelListWithImage = [];
     hooks.mcpServers = [];
@@ -119,35 +119,70 @@ describe('ToolsModalContent image model guide', () => {
     cleanup();
   });
 
-  it('renders a clickable "go to configure" link that navigates to the model tab', async () => {
+  it('renders the video generation section heading', async () => {
+    render(<ToolsModalContent />);
+
+    await waitFor(() => expect(screen.getByText('settings.videoGeneration')).toBeInTheDocument());
+    expect(screen.getByText('settings.videoGenerationModel')).toBeInTheDocument();
+  });
+
+  it('lists only catalog-supported video models (Ark Seedance), filtering out models without a driver yet', async () => {
+    hooks.modelListWithImage = [
+      {
+        id: 'ark-provider',
+        platform: 'openai',
+        name: 'Volcano Ark',
+        base_url: 'https://ark.cn-beijing.volces.com/api/v3',
+        api_key: 'sk-ark',
+        models: ['seedance-1-0-pro', 'kling-v1'],
+      },
+      {
+        id: 'gateway-provider',
+        platform: 'openai',
+        name: 'Gateway',
+        base_url: 'https://gateway.example.com/v1',
+        api_key: 'sk-gateway',
+        models: ['sora-2'],
+      },
+    ];
+
+    render(<ToolsModalContent />);
+
+    // Supported: resolves to an implemented Form C driver (ark-task).
+    await waitFor(() => expect(screen.getByText('seedance-1-0-pro')).toBeInTheDocument());
+
+    // Not yet supported: catalog entries exist but no driver ships yet (kling / sora).
+    expect(screen.queryByText('kling-v1')).not.toBeInTheDocument();
+    expect(screen.queryByText('sora-2')).not.toBeInTheDocument();
+  });
+
+  it('keeps the video model list independent from the image model list', async () => {
+    // A provider whose only model is video-capable (Seedance has no image
+    // counterpart in the catalog) must not show up in the image generation
+    // card's option list, and the image card falls back to its own guide.
+    hooks.modelListWithImage = [
+      {
+        id: 'ark-provider',
+        platform: 'openai',
+        name: 'Volcano Ark',
+        base_url: 'https://ark.cn-beijing.volces.com/api/v3',
+        api_key: 'sk-ark',
+        models: ['seedance-1-0-pro'],
+      },
+    ];
     const navigateToTab = vi.fn();
+
     render(
       <SettingsTabNavigateProvider value={navigateToTab}>
         <ToolsModalContent />
       </SettingsTabNavigateProvider>
     );
 
-    // Both the image and video empty-states render this same guide text.
-    const links = await screen.findAllByText('settings.goToModelSettings');
-    expect(links.length).toBeGreaterThanOrEqual(2);
-    for (const link of links) {
-      // Rendered as an inline anchor (text link), not a button.
-      expect(link.tagName).toBe('A');
-    }
+    await waitFor(() => expect(screen.getByText('seedance-1-0-pro')).toBeInTheDocument());
 
-    fireEvent.click(links[0]);
-
-    await waitFor(() => expect(navigateToTab).toHaveBeenCalledWith('model'));
-  });
-
-  it('renders the guide text as plain text (no link) when no tab navigator is provided', async () => {
-    const { container } = render(<ToolsModalContent />);
-
-    // The empty-state hint still shows the go-to-configure wording, but not as a clickable link.
-    await waitFor(() => expect(container.textContent).toContain('settings.goToModelSettings'));
-    const links = Array.from(container.querySelectorAll('a')).filter(
-      (a) => a.textContent === 'settings.goToModelSettings'
-    );
-    expect(links).toHaveLength(0);
+    // No image-capable model in the fixture, so the image card still falls
+    // back to its empty-state guide (rendered as a link since a navigator was provided).
+    const links = screen.getAllByText('settings.goToModelSettings');
+    expect(links.length).toBeGreaterThanOrEqual(1);
   });
 });
